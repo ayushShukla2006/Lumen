@@ -1,10 +1,10 @@
-from lexer import (
+from Lexer import (
     TT_CHAR,
     TT_PLUS, TT_MINUS, TT_MUL, TT_DIV,
     TT_EQEQ, TT_NEQ, TT_LT, TT_GT, TT_LTE, TT_GTE,
     TT_KEYWORD,
 )
-from nodes import (
+from Nodes import (
     ArrayLiteralNode, ArrayAccessNode, ArrayAssignNode,
     VarReassignNode, ForEachNode, CharNode,
     ThrowNode, TryCatchNode,
@@ -14,7 +14,7 @@ from nodes import (
     IfNode, ForRangeNode, ForCStyleNode, WhileNode, DoWhileNode,
     FuncDefNode, CallNode, ReturnNode,
 )
-from errors import Error
+from Errors import Error
 
 # ── Runtime Error ─────────────────────────────────────────────────────────────
 
