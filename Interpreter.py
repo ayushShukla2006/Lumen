@@ -1,5 +1,6 @@
 from Lexer import (
     TT_CHAR,
+    TT_MODULO, TT_FLOORDIV,
     TT_PLUS, TT_MINUS, TT_MUL, TT_DIV,
     TT_EQEQ, TT_NEQ, TT_LT, TT_GT, TT_LTE, TT_GTE,
     TT_KEYWORD,
@@ -8,6 +9,8 @@ from Nodes import (
     ArrayLiteralNode, ArrayAccessNode, ArrayAssignNode,
     VarReassignNode, ForEachNode, CharNode,
     ThrowNode, TryCatchNode,
+    BreakNode, ContinueNode, VarTypedAssignNode,
+    StructDefNode, StructInstantiateNode, FieldAccessNode, FieldAssignNode,
     NumberNode, StringNode, BoolNode,
     VarAccessNode, VarAssignNode,
     BinOpNode, UnaryOpNode,
@@ -48,6 +51,8 @@ class RuntimeResult:
         self.error        = None
         self.return_value = None
         self.throw_value  = None   # string message from 'throw'
+        self.break_flag   = False
+        self.continue_flag = False
 
     def register(self, res):
         if res.error:
@@ -56,6 +61,10 @@ class RuntimeResult:
             self.return_value = res.return_value
         if res.throw_value is not None:
             self.throw_value = res.throw_value
+        if res.break_flag:
+            self.break_flag = True
+        if res.continue_flag:
+            self.continue_flag = True
         return res.value
 
     def success(self, value):
@@ -70,12 +79,20 @@ class RuntimeResult:
         self.throw_value = message
         return self
 
+    def success_break(self):
+        self.break_flag = True
+        return self
+
+    def success_continue(self):
+        self.continue_flag = True
+        return self
+
     def failure(self, error):
         self.error = error
         return self
 
     def should_return(self):
-        return self.error or self.return_value is not None or self.throw_value is not None
+        return self.error or self.return_value is not None or self.throw_value is not None or self.break_flag or self.continue_flag
 
 # ── Context (scope) ───────────────────────────────────────────────────────────
 
@@ -89,29 +106,29 @@ class Context:
 
 class SymbolTable:
     def __init__(self, parent=None):
-        self.symbols = {}   # name -> (value, is_final)
+        self.symbols = {}   # name -> (value, is_final, declared_type)
         self.parent  = parent
 
     def get(self, name):
         val = self.symbols.get(name)
         if val is None and self.parent:
             return self.parent.get(name)
-        return val  # (value, is_final) or None
+        return val  # (value, is_final, declared_type) or None
 
-    def set(self, name, value, is_final=False):
-        self.symbols[name] = (value, is_final)
+    def set(self, name, value, is_final=False, declared_type=None):
+        self.symbols[name] = (value, is_final, declared_type)
 
     def assign(self, name, value):
-        """Reassign existing variable — respects final, walks scopes."""
+        """Reassign existing variable — respects final and declared_type."""
         if name in self.symbols:
-            _, is_final = self.symbols[name]
+            _, is_final, declared_type = self.symbols[name]
             if is_final:
-                return False, True   # exists, is final
-            self.symbols[name] = (value, False)
-            return True, False       # assigned, not final
+                return False, True, None
+            self.symbols[name] = (value, False, declared_type)
+            return True, False, declared_type
         if self.parent:
             return self.parent.assign(name, value)
-        return False, False          # not found
+        return False, False, None
 
 # ── Lumen Value types ─────────────────────────────────────────────────────────
 
@@ -270,6 +287,48 @@ class LumenChar(LumenValue):
         return f"\'{self.value}\'"
 
 
+class LumenNull(LumenValue):
+    def __init__(self):
+        super().__init__()
+    def is_truthy(self): return False
+    def __repr__(self): return 'null'
+
+
+class LumenStructDef(LumenValue):
+    """The struct definition — stored in symbol table under the struct name."""
+    def __init__(self, name, fields, methods, def_context, name_tok=None):
+        super().__init__()
+        self.name        = name
+        self.name_tok    = name_tok
+        self.fields      = fields    # list of (name, declared_type, default_node, is_final)
+        self.methods     = methods   # list of FuncDefNode
+        self.def_context = def_context
+
+    def __repr__(self):
+        return f'<struct {self.name}>'
+
+
+class LumenStructInstance(LumenValue):
+    """A live instance of a struct."""
+    def __init__(self, struct_def):
+        super().__init__()
+        self.struct_def = struct_def
+        self.fields     = {}   # name -> (value, declared_type, is_final)
+        self.methods    = {}   # name -> LumenFunction
+
+    def get_field(self, name):
+        return self.fields.get(name)
+
+    def set_field(self, name, value, declared_type=None, is_final=False):
+        self.fields[name] = (value, declared_type, is_final)
+
+    def is_truthy(self): return True
+
+    def __repr__(self):
+        fields = ', '.join(f'{k}: {repr(v[0])}' for k, v in self.fields.items())
+        return f'{self.struct_def.name}({fields})'
+
+
 class LumenArray(LumenValue):
     ZERO_VALUES = {
         'int':    lambda: LumenNumber(0),
@@ -355,6 +414,10 @@ class LumenFunction(LumenValue):
         for name, value in zip(self.param_names, args):
             fn_context.symbol_table.set(name, value)
 
+        # inject 'its' if this is a bound method
+        if hasattr(self, 'bound_instance') and self.bound_instance is not None:
+            fn_context.symbol_table.set('its', self.bound_instance)
+
         for node in self.body_nodes:
             rt = interp.visit(node, fn_context)
             if rt.error: return rt
@@ -404,10 +467,15 @@ def _lumen_val_to_str(val):
         return '{' + ', '.join(_lumen_val_to_str(e) for e in val.elements) + '}'
     return repr(val)
 
+_last_print_had_newline = True
+
 def builtin_print(args, pos_start, pos_end, context):
+    global _last_print_had_newline
     if len(args) == 0:
         raise LumenRuntimeError(pos_start, pos_end, "'print' expects at least 1 argument", context)
-    print(''.join(_lumen_val_to_str(a) for a in args), end='')
+    text = ''.join(_lumen_val_to_str(a) for a in args)
+    print(text, end='')
+    _last_print_had_newline = text.endswith('\n')
     return LumenNumber(0)
 
 def builtin_length(args, pos_start, pos_end, context):
@@ -443,15 +511,33 @@ def builtin_str(args, pos_start, pos_end, context):
         return LumenString(args[0].value)
     return LumenString(repr(args[0]))
 
-def builtin_num(args, pos_start, pos_end, context):
-    _require_args('num', args, 1, pos_start, pos_end, context)
-    if not isinstance(args[0], LumenString):
-        raise LumenRuntimeError(pos_start, pos_end, "'num' expects a string", context)
-    try:
-        val = float(args[0].value)
-        return LumenNumber(int(val) if val == int(val) else val)
-    except ValueError:
-        raise LumenRuntimeError(pos_start, pos_end, f"Cannot convert '{args[0].value}' to number", context)
+def builtin_int(args, pos_start, pos_end, context):
+    _require_args('int', args, 1, pos_start, pos_end, context)
+    val = args[0]
+    if isinstance(val, LumenNumber):
+        return LumenNumber(int(val.value))
+    if isinstance(val, LumenString):
+        try:
+            return LumenNumber(int(float(val.value)))
+        except ValueError:
+            raise LumenRuntimeError(pos_start, pos_end, f"Cannot convert '{val.value}' to int", context)
+    if isinstance(val, LumenBool):
+        return LumenNumber(1 if val.value else 0)
+    raise LumenRuntimeError(pos_start, pos_end, "'int' expects a number, string, or bool", context)
+
+def builtin_float(args, pos_start, pos_end, context):
+    _require_args('float', args, 1, pos_start, pos_end, context)
+    val = args[0]
+    if isinstance(val, LumenNumber):
+        return LumenNumber(float(val.value))
+    if isinstance(val, LumenString):
+        try:
+            return LumenNumber(float(val.value))
+        except ValueError:
+            raise LumenRuntimeError(pos_start, pos_end, f"Cannot convert '{val.value}' to float", context)
+    if isinstance(val, LumenBool):
+        return LumenNumber(1.0 if val.value else 0.0)
+    raise LumenRuntimeError(pos_start, pos_end, "'float' expects a number, string, or bool", context)
 
 def builtin_push(args, pos_start, pos_end, context):
     _require_args('push', args, 2, pos_start, pos_end, context)
@@ -526,9 +612,12 @@ def builtin_input(args, pos_start, pos_end, context):
         prompt = args[0].value
 
     if len(args) == 2:
-        if not isinstance(args[1], LumenType):
+        if isinstance(args[1], LumenType):
+            type_name = args[1].name
+        elif isinstance(args[1], LumenBuiltin) and args[1].name in ('int', 'float'):
+            type_name = args[1].name
+        else:
             raise LumenRuntimeError(pos_start, pos_end, "'input' second argument must be a type (int, float, bool, string, char)", context)
-        type_name = args[1].name
 
     try:
         raw = input(prompt)
@@ -572,7 +661,8 @@ BUILTINS = {
     'lower':   builtin_lower,
     'substr':  builtin_substr,
     'str':     builtin_str,
-    'num':     builtin_num,
+    'int':     builtin_int,
+    'float':   builtin_float,
     'input':    builtin_input,
     'push':     builtin_push,
     'pop':      builtin_pop,
@@ -599,9 +689,11 @@ def make_global_table():
         table.set(name, LumenBuiltin(name, fn))
     table.set('true',   LumenBool(True))
     table.set('false',  LumenBool(False))
-    # type sentinels for use as arguments
-    for t in ('int', 'float', 'bool', 'string', 'char'):
+    table.set('null',   LumenNull())
+    # type sentinels for use as arguments e.g. input("prompt", int)
+    for t in ('bool', 'string', 'char'):
         table.set(t, LumenType(t))
+    # int and float stay as builtins — input() handles them by name
     return table
 
 GLOBAL_TABLE = make_global_table()
@@ -652,6 +744,7 @@ class Interpreter:
     def visit_VarAccessNode(self, node, context):
         res      = RuntimeResult()
         name     = node.var_name_tok.value
+        # 'its' is injected by method executor — look it up normally
         entry    = context.symbol_table.get(name)
 
         if entry is None:
@@ -660,7 +753,7 @@ class Interpreter:
                 f"'{name}' is not defined",
                 context
             ))
-        value, _ = entry
+        value, _, _ = entry
         value = value.set_pos(node.pos_start, node.pos_end).set_context(context)
         return res.success(value)
 
@@ -673,7 +766,7 @@ class Interpreter:
         # Check if already declared as final in this scope
         existing = context.symbol_table.get(name)
         if existing is not None:
-            _, is_final = existing
+            _, is_final, _ = existing
             if is_final:
                 return res.failure(LumenRuntimeError(
                     node.pos_start, node.pos_end,
@@ -697,14 +790,63 @@ class Interpreter:
                 f"'{name}' is not defined. Use 'let' to declare it first.",
                 context
             ))
-        _, is_final = entry
+        _, is_final, declared_type = entry
         if is_final:
             return res.failure(LumenRuntimeError(
                 node.pos_start, node.pos_end,
                 f"Cannot reassign final variable '{name}'",
                 context
             ))
-        context.symbol_table.set(name, value, False)
+        # enforce declared type if variable is statically typed
+        if declared_type and not self.check_type(value, declared_type):
+            return res.failure(LumenRuntimeError(
+                node.pos_start, node.pos_end,
+                f"Type mismatch: '{name}' is declared as '{declared_type}', cannot assign {type(value).__name__.replace('Lumen','')}",
+                context
+            ))
+        context.symbol_table.set(name, value, False, declared_type)
+        return res.success(value)
+
+    # ── Type checking helper ─────────────────────────────────────────────────
+
+    TYPE_CHECKERS = {
+        'int':    lambda v: isinstance(v, LumenNumber) and isinstance(v.value, int),
+        'float':  lambda v: isinstance(v, LumenNumber),
+        'bool':   lambda v: isinstance(v, LumenBool),
+        'string': lambda v: isinstance(v, LumenString),
+        'char':   lambda v: isinstance(v, LumenChar),
+    }
+
+    def check_type(self, value, declared_type):
+        checker = self.TYPE_CHECKERS.get(declared_type)
+        return checker(value) if checker else True
+
+    def visit_VarTypedAssignNode(self, node, context):
+        res   = RuntimeResult()
+        name  = node.var_name_tok.value
+        value = res.register(self.visit(node.value_node, context))
+        if res.error: return res
+
+        # type check the initial value
+        if not self.check_type(value, node.declared_type):
+            return res.failure(LumenRuntimeError(
+                node.pos_start, node.pos_end,
+                f"Type mismatch: '{name}' is declared as '{node.declared_type}'",
+                context
+            ))
+
+        # check if already declared as final
+        existing = context.symbol_table.get(name)
+        if existing is not None:
+            _, is_final, _ = existing
+            if is_final:
+                return res.failure(LumenRuntimeError(
+                    node.pos_start, node.pos_end,
+                    f"Cannot redeclare final variable '{name}'",
+                    context
+                ))
+
+        context.symbol_table.set(name, value, node.is_final, node.declared_type)
         return res.success(value)
 
     # ── Operations ────────────────────────────────────────────────────────────
@@ -729,6 +871,14 @@ class Interpreter:
             result, error = left.multed_by(right)
         elif op == TT_DIV:
             result, error = left.dived_by(right)
+        elif op == TT_MODULO:
+            if isinstance(right, LumenNumber) and right.value == 0:
+                return res.failure(LumenRuntimeError(right.pos_start, right.pos_end, 'Modulo by zero', context))
+            result, error = LumenNumber(left.value % right.value).set_context(context), None if isinstance(left, LumenNumber) and isinstance(right, LumenNumber) else (None, left.illegal_op(right))
+        elif op == TT_FLOORDIV:
+            if isinstance(right, LumenNumber) and right.value == 0:
+                return res.failure(LumenRuntimeError(right.pos_start, right.pos_end, 'Division by zero', context))
+            result, error = LumenNumber(int(left.value // right.value)).set_context(context), None if isinstance(left, LumenNumber) and isinstance(right, LumenNumber) else (None, left.illegal_op(right))
         elif op in (TT_EQEQ, TT_NEQ, TT_LT, TT_GT, TT_LTE, TT_GTE):
             result, error = left.get_comparison(op, right)
         elif kw == 'and':
@@ -798,9 +948,20 @@ class Interpreter:
 
         for i in range(int(start.value), int(end.value) + 1):
             context.symbol_table.set(node.var_name_tok.value, LumenNumber(i))
+            should_break = False
             for stmt in node.body_nodes:
                 res.register(self.visit(stmt, context))
-                if res.should_return(): return res
+                if res.error or res.return_value is not None or res.throw_value is not None:
+                    return res
+                if res.break_flag:
+                    should_break = True
+                    res.break_flag = False
+                    break
+                if res.continue_flag:
+                    res.continue_flag = False
+                    break
+            if should_break:
+                break
 
         return res.success(LumenNumber(0))
 
@@ -813,9 +974,20 @@ class Interpreter:
         if isinstance(arr, LumenString):
             for ch in arr.value:
                 context.symbol_table.set(node.var_name_tok.value, LumenChar(ch))
+                should_break = False
                 for stmt in node.body_nodes:
                     res.register(self.visit(stmt, context))
-                    if res.should_return(): return res
+                    if res.error or res.return_value is not None or res.throw_value is not None:
+                        return res
+                    if res.break_flag:
+                        should_break = True
+                        res.break_flag = False
+                        break
+                    if res.continue_flag:
+                        res.continue_flag = False
+                        break
+                if should_break:
+                    break
             return res.success(LumenNumber(0))
 
         if not isinstance(arr, LumenArray):
@@ -826,9 +998,20 @@ class Interpreter:
 
         for element in arr.elements:
             context.symbol_table.set(node.var_name_tok.value, element)
+            should_break = False
             for stmt in node.body_nodes:
                 res.register(self.visit(stmt, context))
-                if res.should_return(): return res
+                if res.error or res.return_value is not None or res.throw_value is not None:
+                    return res
+                if res.break_flag:
+                    should_break = True
+                    res.break_flag = False
+                    break
+                if res.continue_flag:
+                    res.continue_flag = False
+                    break
+            if should_break:
+                break
 
         return res.success(LumenNumber(0))
 
@@ -859,9 +1042,22 @@ class Interpreter:
             if res.error: return res
             if not cond.is_truthy(): break
 
+            should_break = False
             for stmt in node.body_nodes:
-                res.register(self.visit(stmt, context))
-                if res.should_return(): return res
+                rt = self.visit(stmt, context)
+                res.register(rt)
+                if res.error or res.return_value is not None or res.throw_value is not None:
+                    return res
+                if res.break_flag:
+                    should_break = True
+                    res.break_flag = False
+                    break
+                if res.continue_flag:
+                    res.continue_flag = False
+                    break
+
+            if should_break:
+                break
 
         return res.success(LumenNumber(0))
 
@@ -902,6 +1098,36 @@ class Interpreter:
             if res.error: return res
 
         callee = callee.set_context(context)
+
+        if isinstance(callee, LumenStructDef):
+            # struct instantiation
+            from Nodes import StructInstantiateNode as SIN
+            inst_node = SIN(callee.name_tok if hasattr(callee, 'name_tok') else node.node_to_call, node.arg_nodes, node.pos_start, node.pos_end)
+            # build instance directly
+            instance = LumenStructInstance(callee)
+            instance.set_pos(node.pos_start, node.pos_end).set_context(context)
+            for i, (field_name_tok, declared_type, default_node, is_final) in enumerate(callee.fields):
+                fname = field_name_tok.value
+                if i < len(args):
+                    val = args[i]
+                elif default_node is not None:
+                    val = res.register(self.visit(default_node, callee.def_context))
+                    if res.error: return res
+                else:
+                    val = LumenNull()
+                if declared_type and not isinstance(val, LumenNull) and not self.check_type(val, declared_type):
+                    return res.failure(LumenRuntimeError(
+                        node.pos_start, node.pos_end,
+                        f"Type mismatch for field '{fname}': expected '{declared_type}'", context
+                    ))
+                instance.set_field(fname, val, declared_type, is_final)
+            for method_node in callee.methods:
+                mname = method_node.func_name_tok.value
+                params = [tok.value for tok in method_node.param_toks]
+                func   = LumenFunction(mname, params, method_node.body_nodes, context)
+                func.bound_instance = instance
+                instance.methods[mname] = func
+            return res.success(instance)
 
         if isinstance(callee, (LumenFunction, LumenBuiltin)):
             result = res.register(callee.execute(args, node.pos_start, node.pos_end))
@@ -956,7 +1182,7 @@ class Interpreter:
 
         existing = context.symbol_table.get(node.var_name_tok.value)
         if existing is not None:
-            _, is_final = existing
+            _, is_final, _ = existing
             if is_final:
                 return res.failure(LumenRuntimeError(
                     node.pos_start, node.pos_end,
@@ -1012,7 +1238,7 @@ class Interpreter:
                 node.pos_start, node.pos_end,
                 f"'{name}' is not defined", context
             ))
-        arr, is_final = entry
+        arr, is_final, _ = entry
         if is_final:
             return res.failure(LumenRuntimeError(
                 node.pos_start, node.pos_end,
@@ -1038,7 +1264,7 @@ class Interpreter:
                 ))
             s[i] = val.value
             new_str = LumenString(''.join(s)).set_context(context)
-            context.symbol_table.set(name, new_str, is_final)
+            context.symbol_table.set(name, new_str, is_final, None)
             return res.success(val)
 
         if not isinstance(arr, LumenArray):
@@ -1055,6 +1281,138 @@ class Interpreter:
         error = arr.set_at(int(idx.value), val, node.pos_start, node.pos_end, context)
         if error: return res.failure(error)
         return res.success(val)
+
+    def visit_BreakNode(self, node, context):
+        return RuntimeResult().success_break()
+
+    def visit_ContinueNode(self, node, context):
+        return RuntimeResult().success_continue()
+
+    def visit_StructDefNode(self, node, context):
+        res        = RuntimeResult()
+        struct_def = LumenStructDef(
+            node.name_tok.value, node.fields, node.methods, context, node.name_tok
+        )
+        struct_def.set_pos(node.pos_start, node.pos_end).set_context(context)
+        context.symbol_table.set(node.name_tok.value, struct_def)
+        return res.success(struct_def)
+
+    def visit_StructInstantiateNode(self, node, context):
+        res  = RuntimeResult()
+        name = node.name_tok.value
+
+        entry = context.symbol_table.get(name)
+        if entry is None:
+            return res.failure(LumenRuntimeError(
+                node.pos_start, node.pos_end,
+                f"'{name}' is not defined", context
+            ))
+        struct_def, _, _ = entry
+        if not isinstance(struct_def, LumenStructDef):
+            return res.failure(LumenRuntimeError(
+                node.pos_start, node.pos_end,
+                f"'{name}' is not a struct", context
+            ))
+
+        instance = LumenStructInstance(struct_def)
+        instance.set_pos(node.pos_start, node.pos_end).set_context(context)
+
+        # evaluate default values and set fields
+        for i, (field_name_tok, declared_type, default_node, is_final) in enumerate(struct_def.fields):
+            fname = field_name_tok.value
+            if i < len(node.arg_nodes):
+                # argument provided
+                val = res.register(self.visit(node.arg_nodes[i], context))
+                if res.error: return res
+            elif default_node is not None:
+                # use declared default
+                val = res.register(self.visit(default_node, struct_def.def_context))
+                if res.error: return res
+            else:
+                # null
+                val = LumenNull()
+
+            # type check if declared type
+            if declared_type and not isinstance(val, LumenNull) and not self.check_type(val, declared_type):
+                return res.failure(LumenRuntimeError(
+                    node.pos_start, node.pos_end,
+                    f"Type mismatch for field '{fname}': expected '{declared_type}'", context
+                ))
+            instance.set_field(fname, val, declared_type, is_final)
+
+        # bind methods
+        for method_node in struct_def.methods:
+            method_name = method_node.func_name_tok.value
+            params      = [tok.value for tok in method_node.param_toks]
+            func        = LumenFunction(method_name, params, method_node.body_nodes, context)
+            func.bound_instance = instance
+            instance.methods[method_name] = func
+
+        return res.success(instance)
+
+    def visit_FieldAccessNode(self, node, context):
+        res = RuntimeResult()
+        obj = res.register(self.visit(node.obj_node, context))
+        if res.error: return res
+
+        if not isinstance(obj, LumenStructInstance):
+            return res.failure(LumenRuntimeError(
+                node.pos_start, node.pos_end,
+                f"Cannot access field on non-struct value", context
+            ))
+
+        name = node.field_tok.value
+
+        # check methods first
+        if name in obj.methods:
+            return res.success(obj.methods[name])
+
+        # then fields
+        field = obj.get_field(name)
+        if field is None:
+            return res.failure(LumenRuntimeError(
+                node.pos_start, node.pos_end,
+                f"'{obj.struct_def.name}' has no field '{name}'", context
+            ))
+        val, _, _ = field
+        return res.success(val.set_pos(node.pos_start, node.pos_end).set_context(context) if hasattr(val, 'set_pos') else val)
+
+    def visit_FieldAssignNode(self, node, context):
+        res = RuntimeResult()
+        obj = res.register(self.visit(node.obj_node, context))
+        if res.error: return res
+
+        if not isinstance(obj, LumenStructInstance):
+            return res.failure(LumenRuntimeError(
+                node.pos_start, node.pos_end,
+                "Cannot assign field on non-struct value", context
+            ))
+
+        name  = node.field_tok.value
+        value = res.register(self.visit(node.value_node, context))
+        if res.error: return res
+
+        field = obj.get_field(name)
+        if field is None:
+            return res.failure(LumenRuntimeError(
+                node.pos_start, node.pos_end,
+                f"'{obj.struct_def.name}' has no field '{name}'", context
+            ))
+
+        _, declared_type, is_final = field
+        if is_final:
+            return res.failure(LumenRuntimeError(
+                node.pos_start, node.pos_end,
+                f"Cannot reassign final field '{name}'", context
+            ))
+        if declared_type and not isinstance(value, LumenNull) and not self.check_type(value, declared_type):
+            return res.failure(LumenRuntimeError(
+                node.pos_start, node.pos_end,
+                f"Type mismatch for field '{name}': expected '{declared_type}'", context
+            ))
+
+        obj.set_field(name, value, declared_type, is_final)
+        return res.success(value)
 
     def visit_ThrowNode(self, node, context):
         res = RuntimeResult()

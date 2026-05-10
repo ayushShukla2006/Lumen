@@ -1,5 +1,5 @@
 # Lumen Language Documentation
-### Version 0.1 — Not Finalized
+### Version 1.0
 
 ---
 
@@ -15,10 +15,14 @@
 8. [Functions](#functions)
 9. [Arrays](#arrays)
 10. [Strings and Characters](#strings-and-characters)
-11. [Error Handling](#error-handling)
-12. [Built-in Functions](#built-in-functions)
-13. [Escape Sequences](#escape-sequences)
-14. [Execution Model](#execution-model)
+11. [Structs](#structs)
+12. [Error Handling](#error-handling)
+13. [Built-in Functions](#built-in-functions)
+14. [Escape Sequences](#escape-sequences)
+15. [Execution Model](#execution-model)
+16. [Full Example Programs](#full-example-programs)
+17. [Glossary — Keywords](#glossary--keywords)
+18. [Glossary — Built-in Functions](#glossary--built-in-functions)
 
 ---
 
@@ -32,56 +36,130 @@ Lumen is designed to be embeddable in game engines as a scripting layer.
 
 ## Running Lumen
 
-**Interactive shell:**
+### Installation
+
+Build the executable from source using PyInstaller:
+
 ```
-python shell.py
+pip install pyinstaller
+pyinstaller --onefile shell.py --name lumen
 ```
 
-**Run a file:**
+This produces `dist/lumen.exe` on Windows or `dist/lumen` on Linux/Mac. Move it somewhere permanent and add it to your PATH.
+
+### Usage
+
+**Show version:**
 ```
-python shell.py myprogram.lumen
+lumen --version
+```
+
+**Show help:**
+```
+lumen --help
+```
+
+**Run a script:**
+```
+lumen script.lm
+```
+
+Lumen scripts use the `.lm` extension. A warning is shown if a different extension is used.
+
+**Interactive shell:**
+```
+lumen
 ```
 
 **Shell prompt:**
 ```
+Lumen v1.0
+A high-level interpreted scripting language.
+Type 'exit' to quit the shell.
+
 Lumen > let x = 10
 Lumen > func greet(name) then
-      |     print("Hello ", name)
+      |     print("Hello ", name, "\n")
       | end
 ```
 
-The shell automatically detects multiline blocks and shows `      | ` as a continuation prompt until the block is closed with `end`.
+The shell automatically detects multiline blocks and shows `      | ` as a continuation prompt until the block is closed with `end`. Type `exit` to quit.
 
 ---
 
 ## Variables
 
-### Declaration
+Lumen has three tiers of variable declaration.
+
+### Dynamic (default)
+
+Type and value can both change freely.
 
 ```
 let x = 10
-let name = "the user"
+let name = "Lumen"
 let active = true
 ```
 
-### Reassignment
-
+Reassignment:
 ```
 let x = 10
-x = 20          # reassign without let
-x = x + 5      # arithmetic reassignment
+x = 20          # valid
+x = "hello"     # valid — type can change
+x = x + 5      # valid
 ```
 
-### Final (Immutable)
+### Static Typed
 
-Once declared with `final`, the variable cannot be reassigned.
+Declared with `of type`. Value can change, type cannot.
+
+```
+let x of int = 10
+let ratio of float = 3.14
+let name of string = "Lumen"
+let flag of bool = true
+let ch of char = 'A'
+```
+
+Reassignment:
+```
+let x of int = 10
+x = 99          # valid — still int
+x = 3.14        # ERROR: type mismatch, 'x' is declared as 'int'
+x = "hello"     # ERROR: type mismatch
+
+let x of float = 3.14   # valid — redeclares with new type
+```
+
+### Final (Const)
+
+Declared with `final`. Nothing can change — value or type.
 
 ```
 final let PI = 3.14159
 final let APP_NAME = "Lumen"
-
-PI = 3   # ERROR: Cannot reassign final variable 'PI'
+final let MAX of int = 100
 ```
+
+```
+PI = 3          # ERROR: Cannot reassign final variable 'PI'
+MAX = 200       # ERROR: Cannot redeclare final variable 'MAX'
+```
+
+`final` can be combined with `of` to be both const and explicitly typed:
+```
+final let x of int = 10    # const AND typed
+final let y = 10           # const, type inferred from value
+```
+
+### Summary
+
+| Declaration | Value Mutable | Type Mutable |
+|-------------|--------------|--------------|
+| `let x = 10` | yes | yes |
+| `let x of int = 10` | yes | no |
+| `final let x = 10` | no | no |
+| `final let x of int = 10` | no | no |
 
 ### Rules
 
@@ -121,10 +199,12 @@ x = true       # valid
 ### Arithmetic
 
 ```
-let a = 10 + 5    # 15
-let b = 10 - 3    # 7
-let c = 4 * 3     # 12
-let d = 10 / 2    # 5
+let a = 10 + 5    # 15  — addition
+let b = 10 - 3    # 7   — subtraction
+let c = 4 * 3     # 12  — multiplication
+let d = 10 / 2    # 5.0 — division
+let e = 10 // 3   # 3   — floor division
+let f = 10 % 3    # 1   — modulo
 ```
 
 ### Comparison
@@ -146,7 +226,7 @@ true or false     # true
 not true          # false
 ```
 
-`not` is strictly a prefix boolean negation operator. Use `!=` for inequality — not `not`.
+`not` is strictly a prefix boolean negation operator. Use `!=` for inequality comparisons — not `not`.
 
 ### String Concatenation
 
@@ -158,19 +238,35 @@ let full = "Hello" + " " + "World"
 
 ## Control Flow
 
-### If / Elseif / Else
+### If / Otherwise / Otherwise (fallback)
+
+All conditional branches use `otherwise`. With a condition it acts like `otherwise`. Without a condition (`otherwise then`) it acts as the final fallback. All forms close with a single `end`.
 
 ```
 if x > 10 then
-    print("big")
-elseif x == 10 then
-    print("ten")
-else
-    print("small")
+    print("big\n")
+otherwise x == 10 then
+    print("ten\n")
+otherwise then
+    print("small\n")
 end
 ```
 
-All branches close with a single `end`.
+Just an `if`:
+```
+if x == 5 then
+    print("five\n")
+end
+```
+
+`if` with a fallback:
+```
+if x > 10 then
+    print("big\n")
+otherwise then
+    print("not big\n")
+end
+```
 
 ---
 
@@ -181,58 +277,79 @@ All branches close with a single `end`.
 ```
 let i = 0
 while i != 10 then
-    print(i)
+    print(i, "\n")
     i = i + 1
 end
 ```
 
 ### Range For Loop
 
+Inclusive on both ends — `1 to 10` iterates 1, 2, 3 ... 10.
+
 ```
 for i in 1 to 10 then
-    print(i)
+    print(i, "\n")
 end
 ```
 
-Inclusive on both ends — `1 to 10` iterates 1, 2, 3 ... 10.
-
 ### Foreach Loop
 
-Iterates over arrays or strings directly.
+Iterates directly over arrays or strings.
 
 ```
 let scores of int[] = {10, 20, 30}
 
 for score in scores then
-    print(score)
+    print(score, "\n")
 end
 
-let name = "the user"
+let name = "lumen"
 for ch in name then
-    print(ch)
+    print(ch, "\n")
 end
 ```
 
 ### Do-While Loop
 
-Runs the body at least once, then checks the condition.
+Runs the body at least once, then checks the condition. `end` closes the block, `while condition` follows on the next line.
 
 ```
 let i = 0
 do then
-    print(i)
+    print(i, "\n")
     i = i + 1
 end
 while i != 5
 ```
 
-`end` closes the block. `while condition` on the next line is the termination check.
-
 ### C-Style For Loop
 
 ```
 for (let i = 0; i < 10; i = i + 1) then
-    print(i)
+    print(i, "\n")
+end
+```
+
+### Break and Continue
+
+`break` exits the loop immediately. `continue` skips to the next iteration. Both work in all loop types.
+
+```
+let i = 0
+while i != 10 then
+    if i == 5 then
+        break
+    end
+    print(i, "\n")
+    i = i + 1
+end
+
+# print only odd numbers
+for i in 1 to 10 then
+    if i % 2 == 0 then
+        continue
+    end
+    print(i, "\n")
 end
 ```
 
@@ -244,7 +361,7 @@ end
 
 ```
 func greet(name) then
-    print("Hello ", name)
+    print("Hello ", name, "\n")
 end
 ```
 
@@ -301,7 +418,7 @@ let scores of int[] = {1, 2, 3}
 let words of string[] = {}
 ```
 
-### Supported Types
+### Supported Element Types
 
 `int`, `float`, `bool`, `string`, `char`
 
@@ -325,7 +442,7 @@ scores at 0 = 99
 | `float` | `0.0` |
 | `bool` | `false` |
 | `string` | `""` |
-| `char` | `\0` |
+| `char` | null character |
 
 ### Array Operations
 
@@ -352,7 +469,7 @@ push(scores, "hello")   # ERROR: Type mismatch: array is of type 'int'
 Strings are declared with double quotes. Concatenation uses `+`.
 
 ```
-let name = "the user" + " Shukla"
+let name = "Hello" + " World"
 ```
 
 ### String Indexing
@@ -360,20 +477,20 @@ let name = "the user" + " Shukla"
 Returns a `char` value.
 
 ```
-let ch = name at 0     # 'A'
+let ch = name at 0     # 'H'
 ```
 
 ### String Index Assignment
 
 ```
-name at 0 = 'a'        # modifies character in place
+name at 0 = 'h'        # modifies character in place
 ```
 
 ### String Iteration
 
 ```
 for ch in name then
-    print(ch)
+    print(ch, "\n")
 end
 ```
 
@@ -399,8 +516,95 @@ push(letters, '!')
 isalpha('a')        # true — is alphabetic
 isdigit('3')        # true — is digit
 charcode('A')       # 65  — ASCII code
-tochar(65)          # 'A' — from ASCII code
+tochar(65)          # 'A' — char from ASCII code
 ```
+
+---
+
+## Structs
+
+Structs are Lumen's way of grouping related data and behavior. They support fields with optional types and defaults, methods, and `final` fields. There is no inheritance.
+
+### Definition
+
+```
+struct Vector2 then
+    let x of float = 0.0
+    let y of float = 0.0
+end
+```
+
+### Instantiation
+
+Fields are filled positionally. Unprovided fields use their declared default, or `null` if no default is declared.
+
+```
+let v1 = Vector2()          # x = 0.0, y = 0.0
+let v2 = Vector2(3.0, 4.0)  # x = 3.0, y = 4.0
+```
+
+### Field Access and Assignment
+
+```
+print(v2.x, "\n")    # 3.0
+v2.x = 10.0
+print(v2.x, "\n")    # 10.0
+```
+
+### Field Types and Defaults
+
+Fields follow the same rules as variables — dynamic, typed with `of`, or `final`:
+
+```
+struct Player then
+    let name = "unknown"        # dynamic field
+    let health of int = 100     # typed field
+    final let id of int = 0     # final typed field
+    let tag                     # no default — starts as null
+end
+```
+
+### Methods and `its`
+
+Methods are defined with `func` inside the struct body. Use `its` to access the current instance's fields and methods:
+
+```
+struct Vector2 then
+    let x of float = 0.0
+    let y of float = 0.0
+
+    func scale(factor) then
+        its.x = its.x * factor
+        its.y = its.y * factor
+    end
+
+    func length() then
+        return its.x * its.x + its.y * its.y
+    end
+end
+
+let v = Vector2(2.0, 3.0)
+v.scale(2.0)
+print(v.x, "\n")         # 4.0
+print(v.length(), "\n")  # 52.0
+```
+
+### Null
+
+Fields with no default and no provided argument are `null`. Null is also a valid value in dynamic fields.
+
+```
+let n = Node()
+print(n.next, "\n")   # null
+```
+
+### Rules
+
+- No inheritance.
+- Fields can be dynamic, typed (`of`), or `final`.
+- `final` fields cannot be reassigned after instantiation.
+- Typed fields enforce their type on assignment.
+- Methods always use `its` to refer to the current instance.
 
 ---
 
@@ -412,9 +616,9 @@ tochar(65)          # 'A' — from ASCII code
 try then
     let result = riskyFunction()
 on error err then
-    print("Something went wrong: ", err)
+    print("Something went wrong: ", err, "\n")
 always then
-    print("This always runs")
+    print("This always runs\n")
 end
 ```
 
@@ -436,7 +640,7 @@ end
 try then
     let r = divide(10, 0)
 on error err then
-    print("Caught: ", err)
+    print("Caught: ", err, "\n")
 end
 ```
 
@@ -450,10 +654,10 @@ Throws propagate out of functions into the nearest enclosing `try` block.
 
 | Function | Description |
 |----------|-------------|
-| `print(...)` | Print one or more values with no automatic newline. Use `\n` or `\newline` to add line breaks. |
+| `print(...)` | Print one or more values. No automatic newline — use `\n` or `\newline` to break lines. |
 
 ```
-print("Hello ", name, "\n")
+print("Hello ", "World", "\n")
 print("Value: ", 42, "\n")
 print(true, "\n")
 ```
@@ -466,27 +670,31 @@ print(true, "\n")
 | `input(prompt, type)` | Read and convert to a specific type |
 
 ```
-let name = input("Enter name: ")
-let age  = input("Enter age: ", int)
+let name  = input("Enter name: ")
+let age   = input("Enter age: ", int)
 let ratio = input("Enter ratio: ", float)
-let flag = input("Enter bool: ", bool)
-let ch   = input("Enter char: ", char)
+let flag  = input("Enter bool: ", bool)
+let ch    = input("Enter char: ", char)
 ```
 
-Valid types: `int`, `float`, `bool`, `string`, `char`.
-Invalid conversions (e.g. typing `"hello"` for `int`) give a runtime error.
+Valid types: `int`, `float`, `bool`, `string`, `char`. Invalid conversions give a runtime error.
 
 ### Type Conversion
 
 | Function | Description |
 |----------|-------------|
 | `str(value)` | Convert any value to a string |
-| `num(string)` | Convert a string to a number |
+| `int(value)` | Convert a number, string, or bool to an integer |
+| `float(value)` | Convert a number, string, or bool to a float |
 
 ```
-str(42)         # "42"
-str(true)       # "true"
-num("3.14")     # 3.14
+str(42)          # "42"
+str(true)        # "true"
+int(3.7)         # 3
+int("42")        # 42
+int(true)        # 1
+float(10)        # 10.0
+float("3.14")    # 3.14
 ```
 
 ### String Operations
@@ -536,7 +744,7 @@ Both short and long forms are supported inside strings.
 | `\r` | `\return` | Carriage return |
 | `\"` | `\quote` | Double quote |
 | `\\` | | Backslash |
-| | `\space` | Space |
+| | `\space` | Space character |
 
 ```
 print("Line 1\newlineLine 2")
@@ -555,7 +763,7 @@ Lumen is an interpreted language. Source code goes through three stages:
 2. **Parser** — consumes tokens and builds an Abstract Syntax Tree (AST).
 3. **Interpreter** — traverses and directly executes the AST nodes.
 
-The interpreter maintains a **symbol table** per scope. Functions create their own scope. Variables declared in a function are local to that function. Variables declared at the top level are global.
+The interpreter maintains a symbol table per scope. Functions create their own scope. Variables declared in a function are local to that function. Variables declared at the top level are global.
 
 ---
 
@@ -616,16 +824,34 @@ always then
 end
 ```
 
+### Loop Control
+
+```
+# print only odd numbers using continue
+for i in 1 to 20 then
+    if i % 2 == 0 then
+        continue
+    end
+    print(i, "\n")
+end
+
+# stop when input is 0 using break
+while true then
+    let x = input("Enter number (0 to quit): ", int)
+    if x == 0 then
+        break
+    end
+    print("You entered: ", x, "\n")
+end
+```
+
 ### String Manipulation
 
 ```
-let name = input("Enter your name: ")
+let name = input("Enter a name: ")
 print("Original:  ", name, "\n")
 print("Uppercase: ", upper(name), "\n")
 print("Length:    ", length(name), "\n")
-
-name at 0 = upper(name at 0)
-print("Capitalized: ", name, "\n")
 
 print("Characters:\n")
 for ch in name then
@@ -634,3 +860,74 @@ for ch in name then
     end
 end
 ```
+
+---
+
+## Glossary — Keywords
+
+Every keyword in Lumen and what it does.
+
+| Keyword | Category | Description |
+|---------|----------|-------------|
+| `let` | Variables | Declares a mutable variable. `let x = 10` |
+| `final` | Variables | Modifier that makes a variable immutable. Used before `let`. `final let x = 10` |
+| `of` | Variables / Arrays | Specifies the type of a variable or array. `let x of int = 10` locks the type of `x` to int. `let scores of int[]` declares a typed array. |
+| `true` | Values | Boolean literal true |
+| `false` | Values | Boolean literal false |
+| `if` | Control Flow | Starts a conditional block. Must be followed by a condition and `then` |
+| `otherwise` | Control Flow | Additional branch inside an `if` block. With a condition: `otherwise x == 10 then`. Without a condition: `otherwise then` — acts as the final fallback |
+| `then` | Blocks | Opens a code block. Used after `if`, `otherwise`, `for`, `while`, `do`, `func`, `try`, `on error`, `always` |
+| `end` | Blocks | Closes any block |
+| `for` | Loops | Starts a range loop or foreach loop |
+| `in` | Loops | Used in range and foreach loops. `for i in 1 to 10` or `for item in array` |
+| `to` | Loops | Defines the upper bound of a range loop. `1 to 10` |
+| `while` | Loops | Starts a while loop, or defines the condition check in a do-while loop |
+| `do` | Loops | Starts a do-while block — body runs at least once |
+| `break` | Loops | Exits the current loop immediately |
+| `continue` | Loops | Skips the rest of the current iteration and moves to the next |
+| `func` | Functions | Declares a function. `func name(params) then` |
+| `return` | Functions | Returns a value from a function. Optional — functions return `0` implicitly |
+| `and` | Logical | True only if both conditions are true |
+| `or` | Logical | True if at least one condition is true |
+| `not` | Logical | Prefix boolean negation. `not true` evaluates to `false` |
+| `try` | Error Handling | Starts a try block — code that might fail |
+| `on` | Error Handling | Part of `on error` — introduces the catch block |
+| `error` | Error Handling | Part of `on error` — follows `on` |
+| `always` | Error Handling | Optional block that always runs whether or not an error occurred |
+| `throw` | Error Handling | Raises an error from Lumen code. Must throw a string. `throw "message"` |
+| `int` | Types | Integer type — used in array declarations and `input()` |
+| `float` | Types | Float type — used in array declarations and `input()` |
+| `bool` | Types | Boolean type — used in array declarations and `input()` |
+| `string` | Types | String type — used in array declarations and `input()` |
+| `char` | Types | Character type — used in array declarations and `input()` |
+| `at` | Arrays / Strings | Index access or assignment. `scores at 0` reads, `scores at 0 = 99` writes |
+| `struct` | Structs | Declares a struct type. `struct Name then ... end` |
+| `its` | Structs | Reference to the current struct instance inside a method. `its.x`, `its.health` |
+| `null` | Values | Represents an uninitialized or absent value. Default for fields with no default declared. |
+
+---
+
+## Glossary — Built-in Functions
+
+Every built-in function in Lumen.
+
+| Function | Signature | Returns | Description |
+|----------|-----------|---------|-------------|
+| `print` | `print(val, ...)` | nothing | Prints one or more values with no automatic newline. Use `\n` to add line breaks. Accepts any type. |
+| `input` | `input(prompt)` | `string` | Displays a prompt and reads a line from the user. Returns a string. |
+| `input` | `input(prompt, type)` | `type` | Reads a line and converts to the given type. Valid types: `int`, `float`, `bool`, `string`, `char`. Errors on invalid input. |
+| `str` | `str(value)` | `string` | Converts any value to its string representation. |
+| `int` | `int(value)` | `int` | Converts a number, string, or bool to an integer. Truncates floats. Errors on invalid strings. |
+| `float` | `float(value)` | `float` | Converts a number, string, or bool to a float. Errors on invalid strings. |
+| `length` | `length(string)` | `int` | Returns the number of characters in a string. |
+| `length` | `length(array)` | `int` | Returns the number of elements in an array. |
+| `upper` | `upper(string)` | `string` | Returns an uppercase copy of the string. |
+| `lower` | `lower(string)` | `string` | Returns a lowercase copy of the string. |
+| `substr` | `substr(string, start, end)` | `string` | Returns a slice of the string from index `start` up to but not including `end`. |
+| `push` | `push(array, value)` | nothing | Appends a value to a dynamic array. Errors on fixed-size arrays or type mismatch. |
+| `pop` | `pop(array)` | element | Removes and returns the last element of a dynamic array. Errors if empty. |
+| `dequeue` | `dequeue(array)` | element | Removes and returns the first element of a dynamic array. Errors if empty. |
+| `isalpha` | `isalpha(char)` | `bool` | Returns true if the character is alphabetic (a-z or A-Z). |
+| `isdigit` | `isdigit(char)` | `bool` | Returns true if the character is a digit (0-9). |
+| `charcode` | `charcode(char)` | `int` | Returns the ASCII integer code of the character. |
+| `tochar` | `tochar(int)` | `char` | Returns the character corresponding to the given ASCII code. |

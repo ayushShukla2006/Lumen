@@ -1,5 +1,6 @@
 from Lexer import (
     TT_LBRACE, TT_RBRACE, TT_LBRACKET, TT_RBRACKET, TT_CHAR,
+    TT_MODULO, TT_FLOORDIV, TT_DOT,
     TT_INT, TT_FLOAT, TT_STRING, TT_IDENTIFIER, TT_KEYWORD,
     TT_PLUS, TT_MINUS, TT_MUL, TT_DIV,
     TT_EQ, TT_EQEQ, TT_NEQ, TT_LT, TT_GT, TT_LTE, TT_GTE,
@@ -9,6 +10,8 @@ from Nodes import (
     ArrayLiteralNode, ArrayAccessNode, ArrayAssignNode,
     VarReassignNode, ForEachNode, CharNode,
     ThrowNode, TryCatchNode,
+    BreakNode, ContinueNode, VarTypedAssignNode,
+    StructDefNode, StructInstantiateNode, FieldAccessNode, FieldAssignNode,
     NumberNode, StringNode, BoolNode,
     VarAccessNode, VarAssignNode,
     BinOpNode, UnaryOpNode,
@@ -112,9 +115,7 @@ class Parser:
                 break
             if self.current_tok.matches(TT_KEYWORD, 'end'):
                 break
-            if self.current_tok.matches(TT_KEYWORD, 'else'):
-                break
-            if self.current_tok.matches(TT_KEYWORD, 'elseif'):
+            if self.current_tok.matches(TT_KEYWORD, 'otherwise'):
                 break
             if self.current_tok.matches(TT_KEYWORD, 'while') and self._in_do_while:
                 break
@@ -134,6 +135,24 @@ class Parser:
     def statement(self):
         res = ParseResult()
         pos_start = self.current_tok.pos_start
+
+        # struct
+        if self.current_tok.matches(TT_KEYWORD, 'struct'):
+            node = res.register(self.struct_def())
+            if res.error: return res
+            return res.success(node)
+
+        # break
+        if self.current_tok.matches(TT_KEYWORD, 'break'):
+            pos = self.current_tok.pos_start
+            res.register_advancement(); self.advance()
+            return res.success(BreakNode(pos, self.current_tok.pos_end))
+
+        # continue
+        if self.current_tok.matches(TT_KEYWORD, 'continue'):
+            pos = self.current_tok.pos_start
+            res.register_advancement(); self.advance()
+            return res.success(ContinueNode(pos, self.current_tok.pos_end))
 
         # throw
         if self.current_tok.matches(TT_KEYWORD, 'throw'):
@@ -234,9 +253,15 @@ class Parser:
         var_name = self.current_tok
         res.register_advancement(); self.advance()
 
-        # Array declaration: let name of type[size] = {...}  or  let name of type[] = {...}
+        # 'of' — could be typed variable or array declaration
         if self.current_tok.matches(TT_KEYWORD, 'of'):
-            return self.array_declare(var_name, is_final, pos_start, res)
+            # peek ahead: if after type there's a '[' it's an array, otherwise typed var
+            type_tok = self.peek(1)  # token after 'of'
+            bracket_tok = self.peek(2)  # token after type
+            if bracket_tok and bracket_tok.type == TT_LBRACKET:
+                return self.array_declare(var_name, is_final, pos_start, res)
+            else:
+                return self.typed_var_assign(var_name, is_final, pos_start, res)
 
         if self.current_tok.type != TT_EQ:
             return res.failure(InvalidSyntaxError(
@@ -248,6 +273,34 @@ class Parser:
         value = res.register(self.expr())
         if res.error: return res
         return res.success(VarAssignNode(var_name, value, is_final))
+
+    def typed_var_assign(self, var_name, is_final, pos_start, res):
+        VALID_TYPES = ('int', 'float', 'bool', 'string', 'char')
+
+        # consume 'of'
+        res.register_advancement(); self.advance()
+
+        if self.current_tok.value not in VALID_TYPES:
+            return res.failure(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                "Expected type: int, float, bool, string, or char"
+            ))
+        declared_type = self.current_tok.value
+        res.register_advancement(); self.advance()
+
+        if self.current_tok.type != TT_EQ:
+            return res.failure(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                "Expected '='"
+            ))
+        res.register_advancement(); self.advance()
+
+        value = res.register(self.expr())
+        if res.error: return res
+
+        return res.success(VarTypedAssignNode(
+            var_name, declared_type, value, is_final, pos_start, self.current_tok.pos_end
+        ))
 
     def array_declare(self, var_name, is_final, pos_start, res):
         VALID_TYPES = ('int', 'float', 'bool', 'string', 'char')
@@ -350,8 +403,8 @@ class Parser:
         return self.bin_op(self.term, ops_tt=[TT_PLUS, TT_MINUS])
 
     def term(self):
-        """Handles: factor ((* | /) factor)*"""
-        return self.bin_op(self.factor, ops_tt=[TT_MUL, TT_DIV])
+        """Handles: factor ((* | /) / // | %) factor)*"""
+        return self.bin_op(self.factor, ops_tt=[TT_MUL, TT_DIV, TT_FLOORDIV, TT_MODULO])
 
     def factor(self):
         """Handles: unary +/-, atoms, parentheses"""
@@ -396,6 +449,51 @@ class Parser:
                 ))
 
             return res.success(ArrayAccessNode(atom, index, pos_start, self.current_tok.pos_end))
+
+        # Field access / assign: obj.field  or  obj.field = value
+        while self.current_tok.type == TT_DOT:
+            pos_start = atom.pos_start
+            res.register_advancement(); self.advance()   # consume '.'
+
+            if self.current_tok.type != TT_IDENTIFIER:
+                return res.failure(InvalidSyntaxError(
+                    self.current_tok.pos_start, self.current_tok.pos_end,
+                    "Expected field name after '.'"
+                ))
+            field_tok = self.current_tok
+            res.register_advancement(); self.advance()
+
+            # method call: obj.method(args)
+            if self.current_tok.type == TT_LPAREN:
+                res.register_advancement(); self.advance()
+                args = []
+                if self.current_tok.type != TT_RPAREN:
+                    args.append(res.register(self.expr()))
+                    if res.error: return res
+                    while self.current_tok.type == TT_COMMA:
+                        res.register_advancement(); self.advance()
+                        args.append(res.register(self.expr()))
+                        if res.error: return res
+                if self.current_tok.type != TT_RPAREN:
+                    return res.failure(InvalidSyntaxError(
+                        self.current_tok.pos_start, self.current_tok.pos_end,
+                        "Expected ')'"
+                    ))
+                res.register_advancement(); self.advance()
+                # wrap as FieldAccess of a CallNode — store as field access with args
+                method_access = FieldAccessNode(atom, field_tok, pos_start, self.current_tok.pos_end)
+                atom = CallNode(method_access, args, pos_start, self.current_tok.pos_end)
+                continue
+
+            # field assign: obj.field = value
+            if self.current_tok.type == TT_EQ:
+                res.register_advancement(); self.advance()
+                value = res.register(self.expr())
+                if res.error: return res
+                return res.success(FieldAssignNode(atom, field_tok, value, pos_start, self.current_tok.pos_end))
+
+            # field access: obj.field
+            atom = FieldAccessNode(atom, field_tok, pos_start, self.current_tok.pos_end)
 
         # Function call
         if self.current_tok.type == TT_LPAREN:
@@ -451,6 +549,11 @@ class Parser:
             res.register_advancement(); self.advance()
             return res.success(VarAccessNode(tok))
 
+        # 'its' — self reference inside struct methods
+        if tok.matches(TT_KEYWORD, 'its'):
+            res.register_advancement(); self.advance()
+            return res.success(VarAccessNode(tok))
+
         if tok.type == TT_IDENTIFIER:
             res.register_advancement(); self.advance()
             return res.success(VarAccessNode(tok))
@@ -496,26 +599,29 @@ class Parser:
         if res.error: return res
         cases.append((condition, body))
 
-        # elseif branches
-        while self.current_tok.matches(TT_KEYWORD, 'elseif'):
+        # otherwise condition then  OR  otherwise then (fallback)
+        while self.current_tok.matches(TT_KEYWORD, 'otherwise'):
             res.register_advancement(); self.advance()
+
+            # otherwise then — no condition, fallback branch
+            if self.current_tok.matches(TT_KEYWORD, 'then'):
+                res.register_advancement(); self.advance()
+                else_case = res.register(self.statements())
+                if res.error: return res
+                break  # nothing can follow a fallback otherwise
+
+            # otherwise condition then — conditional branch
             condition = res.register(self.expr())
             if res.error: return res
             if not self.current_tok.matches(TT_KEYWORD, 'then'):
                 return res.failure(InvalidSyntaxError(
                     self.current_tok.pos_start, self.current_tok.pos_end,
-                    "Expected 'then'"
+                    "Expected 'then' after condition"
                 ))
             res.register_advancement(); self.advance()
             body = res.register(self.statements())
             if res.error: return res
             cases.append((condition, body))
-
-        # else
-        if self.current_tok.matches(TT_KEYWORD, 'else'):
-            res.register_advancement(); self.advance()
-            else_case = res.register(self.statements())
-            if res.error: return res
 
         # end
         if not self.current_tok.matches(TT_KEYWORD, 'end'):
@@ -776,6 +882,96 @@ class Parser:
         res.register_advancement(); self.advance()
 
         return res.success(FuncDefNode(func_name, params, body, pos_start, pos_end))
+
+    # ── Struct definition ────────────────────────────────────────────────────
+
+    def struct_def(self):
+        res       = ParseResult()
+        pos_start = self.current_tok.pos_start
+        res.register_advancement(); self.advance()   # consume 'struct'
+
+        if self.current_tok.type != TT_IDENTIFIER:
+            return res.failure(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                "Expected struct name"
+            ))
+        name_tok = self.current_tok
+        res.register_advancement(); self.advance()
+
+        if not self.current_tok.matches(TT_KEYWORD, 'then'):
+            return res.failure(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                "Expected 'then' after struct name"
+            ))
+        res.register_advancement(); self.advance()
+        self.skip_newlines(res)
+
+        VALID_TYPES = ('int', 'float', 'bool', 'string', 'char')
+        fields  = []   # (name_tok, declared_type or None, default_node or None, is_final)
+        methods = []   # FuncDefNode list
+
+        while not self.current_tok.matches(TT_KEYWORD, 'end'):
+            if self.current_tok.type == TT_EOF:
+                return res.failure(InvalidSyntaxError(
+                    self.current_tok.pos_start, self.current_tok.pos_end,
+                    "Expected 'end' to close struct"
+                ))
+
+            # method
+            if self.current_tok.matches(TT_KEYWORD, 'func'):
+                method = res.register(self.func_def())
+                if res.error: return res
+                methods.append(method)
+                self.skip_newlines(res)
+                continue
+
+            # field: let name / final let name / let name of type / final let name of type
+            is_final = False
+            if self.current_tok.matches(TT_KEYWORD, 'final'):
+                is_final = True
+                res.register_advancement(); self.advance()
+
+            if not self.current_tok.matches(TT_KEYWORD, 'let'):
+                return res.failure(InvalidSyntaxError(
+                    self.current_tok.pos_start, self.current_tok.pos_end,
+                    "Expected 'let' or 'func' in struct body"
+                ))
+            res.register_advancement(); self.advance()
+
+            if self.current_tok.type != TT_IDENTIFIER:
+                return res.failure(InvalidSyntaxError(
+                    self.current_tok.pos_start, self.current_tok.pos_end,
+                    "Expected field name"
+                ))
+            field_name = self.current_tok
+            res.register_advancement(); self.advance()
+
+            # optional type annotation
+            declared_type = None
+            if self.current_tok.matches(TT_KEYWORD, 'of'):
+                res.register_advancement(); self.advance()
+                if self.current_tok.value not in VALID_TYPES:
+                    return res.failure(InvalidSyntaxError(
+                        self.current_tok.pos_start, self.current_tok.pos_end,
+                        "Expected type: int, float, bool, string, or char"
+                    ))
+                declared_type = self.current_tok.value
+                res.register_advancement(); self.advance()
+
+            # optional default value
+            default_node = None
+            if self.current_tok.type == TT_EQ:
+                res.register_advancement(); self.advance()
+                default_node = res.register(self.expr())
+                if res.error: return res
+
+            fields.append((field_name, declared_type, default_node, is_final))
+            self.skip_newlines(res)
+
+        pos_end = self.current_tok.pos_end
+        res.register_advancement(); self.advance()   # consume 'end'
+
+        return res.success(StructDefNode(name_tok, fields, methods, pos_start, pos_end))
 
     # ── Try / on error / always ──────────────────────────────────────────────
 

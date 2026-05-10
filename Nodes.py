@@ -241,3 +241,63 @@ class TryCatchNode:
         self.always_body  = always_body    # may be None
         self.pos_start    = pos_start
         self.pos_end      = pos_end
+
+
+class BreakNode:
+    def __init__(self, pos_start, pos_end):
+        self.pos_start = pos_start
+        self.pos_end   = pos_end
+
+class ContinueNode:
+    def __init__(self, pos_start, pos_end):
+        self.pos_start = pos_start
+        self.pos_end   = pos_end
+
+
+class VarTypedAssignNode:
+    """let x of int = 10 — typed mutable variable"""
+    def __init__(self, var_name_tok, declared_type, value_node, is_final, pos_start, pos_end):
+        self.var_name_tok  = var_name_tok
+        self.declared_type = declared_type   # 'int' | 'float' | 'bool' | 'string' | 'char'
+        self.value_node    = value_node
+        self.is_final      = is_final
+        self.pos_start     = pos_start
+        self.pos_end       = pos_end
+
+
+class StructDefNode:
+    """struct Name then fields/methods end"""
+    def __init__(self, name_tok, fields, methods, pos_start, pos_end):
+        self.name_tok  = name_tok
+        self.fields    = fields    # list of (name_tok, declared_type, default_node)
+        self.methods   = methods   # list of FuncDefNode
+        self.pos_start = pos_start
+        self.pos_end   = pos_end
+
+
+class StructInstantiateNode:
+    """StructName(arg1, arg2, ...)"""
+    def __init__(self, name_tok, arg_nodes, pos_start, pos_end):
+        self.name_tok  = name_tok
+        self.arg_nodes = arg_nodes
+        self.pos_start = pos_start
+        self.pos_end   = pos_end
+
+
+class FieldAccessNode:
+    """obj.field"""
+    def __init__(self, obj_node, field_tok, pos_start, pos_end):
+        self.obj_node  = obj_node
+        self.field_tok = field_tok
+        self.pos_start = pos_start
+        self.pos_end   = pos_end
+
+
+class FieldAssignNode:
+    """obj.field = value"""
+    def __init__(self, obj_node, field_tok, value_node, pos_start, pos_end):
+        self.obj_node   = obj_node
+        self.field_tok  = field_tok
+        self.value_node = value_node
+        self.pos_start  = pos_start
+        self.pos_end    = pos_end

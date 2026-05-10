@@ -9,12 +9,14 @@ LETTERS_DIGITS = LETTERS + DIGITS + '_'
 KEYWORDS = {
     'let', 'final', 'func', 'return',
     'of', 'at',
-    'if', 'then', 'elseif', 'else', 'end',
+    'if', 'then', 'otherwise', 'end',
     'for', 'in', 'to', 'while', 'do',
     'and', 'or', 'not',
     'true', 'false',
     'char',
     'try', 'on', 'error', 'always', 'throw',
+    'break', 'continue',
+    'struct', 'its', 'null',
 }
 
 # ── Token types ──────────────────────────────────────────────────────────────
@@ -42,6 +44,9 @@ TT_GTE        = 'GTE'         # >=
 TT_LPAREN     = 'LPAREN'      # (
 TT_RPAREN     = 'RPAREN'      # )
 TT_COMMA      = 'COMMA'
+TT_DOT        = 'DOT'
+TT_MODULO     = 'MODULO'
+TT_FLOORDIV   = 'FLOORDIV'
 TT_LBRACE     = 'LBRACE'
 TT_RBRACE     = 'RBRACE'
 TT_LBRACKET   = 'LBRACKET'
@@ -144,6 +149,9 @@ class Lexer:
                 tokens.append(Token(TT_MINUS,  pos_start=self.pos)); self.advance()
             elif ch == '*':
                 tokens.append(Token(TT_MUL,    pos_start=self.pos)); self.advance()
+            elif ch == '/' and self.pos.idx + 1 < len(self.text) and self.text[self.pos.idx + 1] == '/':
+                tokens.append(Token(TT_FLOORDIV, pos_start=self.pos))
+                self.advance(); self.advance()
             elif ch == '/':
                 tokens.append(Token(TT_DIV,    pos_start=self.pos)); self.advance()
             elif ch == '(':
@@ -152,7 +160,12 @@ class Lexer:
                 tokens.append(Token(TT_RPAREN, pos_start=self.pos)); self.advance()
             elif ch == ',':
                 tokens.append(Token(TT_COMMA,   pos_start=self.pos)); self.advance()
+            elif ch == '.' and (self.pos.idx + 1 >= len(self.text) or not self.text[self.pos.idx + 1].isdigit()):
+                tokens.append(Token(TT_DOT, pos_start=self.pos)); self.advance()
+            elif ch == '%':
+                tokens.append(Token(TT_MODULO, pos_start=self.pos)); self.advance()
             elif ch == '{':
+
                 tokens.append(Token(TT_LBRACE,  pos_start=self.pos)); self.advance()
             elif ch == '}':
                 tokens.append(Token(TT_RBRACE,  pos_start=self.pos)); self.advance()
