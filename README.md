@@ -30,7 +30,7 @@
 
 Lumen is a high-level, interpreted scripting language designed to read like English while keeping the structure and explicitness of C and Java. It uses keyword-based block delimiters (`then...end`), dynamic typing with optional type enforcement on arrays, and an English-style logical operator set.
 
-Lumen is designed to be embeddable in game engines as a scripting layer.
+Lumen is a prototype hobby language devolped for understanding how language works
 
 ---
 
