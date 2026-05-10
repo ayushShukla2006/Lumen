@@ -79,6 +79,8 @@ def read_input():
 
 
 def print_version():
+    print("(v)")
+    print(" =")
     print(f"Lumen v{VERSION}")
     print("A high-level interpreted scripting language.")
     print("Type 'exit' to quit the shell.")
