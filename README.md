@@ -73,6 +73,8 @@ lumen
 
 **Shell prompt:**
 ```
+(v)
+ =
 Lumen v1.0
 A high-level interpreted scripting language.
 Type 'exit' to quit the shell.
